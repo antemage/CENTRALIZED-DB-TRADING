@@ -8,6 +8,15 @@ const WINDOW_CANDLES: Record<string, Record<string, number>> = {
 };
 
 export async function GET(req: NextRequest) {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    return NextResponse.json(
+      { error: 'Missing env: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel (Settings → Environment Variables), then redeploy.' },
+      { status: 503 }
+    );
+  }
+
   const performance = req.nextUrl.searchParams.get('performance') as '24h' | '1h' | '15m' | 'off' | null;
   const intervalParam = (req.nextUrl.searchParams.get('interval') ?? '1h') as '1h' | '15m';
   const benchmark = (req.nextUrl.searchParams.get('benchmark') ?? 'USDT') as 'USDT' | 'BTC';

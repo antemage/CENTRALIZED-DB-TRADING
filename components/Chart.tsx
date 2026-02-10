@@ -41,8 +41,11 @@ export default function Chart({
   const maSeries = useRef<ISeriesApi<'Line'> | null>(null);
   const volSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const loadMoreRequested = useRef<string | null>(null);
-  const loadNewerRequested = useRef<string | null>(null);
   const initialFitDone = useRef(false);
+  const prevDataLength = useRef(0);
+  const lastLoadWasPrepend = useRef(false);
+  const lastLoadMoreTime = useRef(0);
+  const LOAD_MORE_COOLDOWN_MS = 1500;
 
   useEffect(() => {
     if (!chartRef.current || !data.length) return;
@@ -72,6 +75,8 @@ export default function Chart({
 
     const chart = chartInstance.current!;
     const preserveRange = chart.timeScale().getVisibleLogicalRange();
+    const prevLen = prevDataLength.current;
+    const added = data.length - prevLen;
 
     const candles: CandlestickData[] = data.map((r) => ({
       time: toTime(r.ts), open: Number(r.o), high: Number(r.h), low: Number(r.l), close: Number(r.c),
@@ -90,49 +95,52 @@ export default function Chart({
     }));
     volSeries.current!.setData(volumeData);
 
-    if (preserveRange) chart.timeScale().setVisibleLogicalRange(preserveRange);
+    const rangeToApply =
+      lastLoadWasPrepend.current && added > 0
+        ? { from: 0, to: Math.min(80, data.length - 1) }
+        : preserveRange;
+    lastLoadWasPrepend.current = false;
+
+    if (rangeToApply) {
+      requestAnimationFrame(() => {
+        if (chartInstance.current) chartInstance.current.timeScale().setVisibleLogicalRange(rangeToApply);
+      });
+    }
+
+    prevDataLength.current = data.length;
 
     if (!initialFitDone.current) {
       chartInstance.current!.timeScale().fitContent();
       initialFitDone.current = true;
     }
 
-    if ((onLoadMore || onLoadNewer) && data.length > 0) {
+    if (onLoadMore && hasMoreOlder && data.length > 0) {
       const oldestTs = data[0].ts;
-      const latestTs = data[data.length - 1].ts;
-      const chart = chartInstance.current!;
       const handler = (range: { from: number; to: number } | null) => {
         if (!range || loadingMore) return;
-        if (onLoadMore && hasMoreOlder && loadMoreRequested.current !== oldestTs && range.from < 30) {
+        const atLeft = range.from < 30;
+        const cooldownOk = Date.now() - lastLoadMoreTime.current > LOAD_MORE_COOLDOWN_MS;
+        const notSameRequest = loadMoreRequested.current !== oldestTs;
+        if (atLeft && cooldownOk && notSameRequest) {
+          lastLoadMoreTime.current = Date.now();
           loadMoreRequested.current = oldestTs;
+          lastLoadWasPrepend.current = true;
           onLoadMore(oldestTs);
         }
-        if (onLoadNewer && loadNewerRequested.current !== latestTs && range.to > data.length - 30) {
-          loadNewerRequested.current = latestTs;
-          onLoadNewer(latestTs);
-        }
       };
-      let subscribed = false;
-      const timer = setTimeout(() => {
+      const t = setTimeout(() => {
         chart.timeScale().subscribeVisibleLogicalRangeChange(handler);
-        subscribed = true;
-      }, 500);
+      }, 300);
       return () => {
-        clearTimeout(timer);
-        if (subscribed) {
-          try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler); } catch (_) {}
-        }
+        clearTimeout(t);
+        try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler); } catch (_) {}
         loadMoreRequested.current = null;
-        loadNewerRequested.current = null;
       };
     }
-  }, [data, maLength, data.length, onLoadMore, onLoadNewer, loadingMore, hasMoreOlder]);
+  }, [data, maLength, data.length, onLoadMore, loadingMore, hasMoreOlder]);
 
   useEffect(() => {
-    if (data.length) {
-      loadMoreRequested.current = null;
-      loadNewerRequested.current = null;
-    }
+    if (data.length) loadMoreRequested.current = null;
   }, [data.length]);
 
   useEffect(() => {
@@ -148,5 +156,27 @@ export default function Chart({
     };
   }, []);
 
-  return <div ref={chartRef} style={{ width: '100%', height: '100%' }} />;
+  const scrollToLatest = () => {
+    if (!chartInstance.current || !data.length) return;
+    const n = data.length;
+    const visibleBars = 80;
+    chartInstance.current.timeScale().setVisibleLogicalRange({
+      from: Math.max(0, n - visibleBars),
+      to: n - 1,
+    });
+  };
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div ref={chartRef} style={{ width: '100%', height: '100%' }} />
+      <button
+        type="button"
+        onClick={scrollToLatest}
+        className="chart-scroll-latest"
+        title="Scroll to latest"
+      >
+        Latest
+      </button>
+    </div>
+  );
 }

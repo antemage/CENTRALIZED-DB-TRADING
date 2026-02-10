@@ -34,6 +34,14 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: 
 .chart-wrap { flex: 1; min-height: 0; position: relative; }
 .chart-wrap > div { width: 100%; height: 100%; }
 
+.chart-scroll-latest {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+  padding: 0.35rem 0.75rem; border-radius: 6px; font-size: 0.8rem; cursor: pointer;
+  z-index: 10;
+}
+.chart-scroll-latest:hover { color: var(--text); border-color: var(--accent); }
+
 .time-bar {
   display: flex; align-items: center; gap: 1rem; padding: 0.4rem 1rem;
   background: var(--bg); border-bottom: 1px solid var(--border); font-size: 0.8rem; color: var(--muted);
