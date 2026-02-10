@@ -1,4 +1,4 @@
-# At 1 min past (:16, :31, :46) and 8 min past (:08, :23, :38, :53) after 15m close. At :01 hourly workflow runs (1h then 15m then funding).
+# 7 times per hour (UTC): :08, :16, :23, :31, :38, :46, :53. Hourly at :01 also runs 15m (with 1h + funding).
 # 15m candles only (no funding; funding runs hourly at :01)
 name: Ingest 15m candles
 

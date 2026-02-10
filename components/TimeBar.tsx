@@ -2,12 +2,15 @@
 
 import { useState, useEffect } from 'react';
 
-function formatTime(ts: string, tz: 'UTC' | 'IST') {
-  const d = new Date(ts);
+/** Bar start ts (string) → display as close time (bar end) in given TZ. E.g. 18:45 bar → 19:00 */
+function formatCloseTime(barStartTs: string, interval: string, tz: 'UTC' | 'IST') {
+  const d = new Date(barStartTs);
+  const addMs = interval === '15m' ? 15 * 60 * 1000 : 60 * 60 * 1000;
+  const closeDate = new Date(d.getTime() + addMs);
   if (tz === 'IST') {
-    return d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    return closeDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
   }
-  return d.toLocaleString('en-GB', { timeZone: 'UTC', hour12: false, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  return closeDate.toLocaleString('en-GB', { timeZone: 'UTC', hour12: false, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 function nextCloseMs(interval: string): number | null {
@@ -51,7 +54,7 @@ export default function TimeBar({
 
   return (
     <div className="time-bar">
-      <span className="time-bar-item">Last candle: {lastCandleTs ? formatTime(lastCandleTs, tz) : '--'}</span>
+      <span className="time-bar-item">Last candle: {lastCandleTs ? formatCloseTime(lastCandleTs, interval, tz) : '--'}</span>
       <span className="time-bar-item">Next close: {countdown}</span>
       <span className="time-bar-item">Current: {now}</span>
       <div className="time-bar-tz">

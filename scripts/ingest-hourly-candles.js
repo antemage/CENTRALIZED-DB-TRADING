@@ -91,12 +91,19 @@ async function fetchFunding(symbol, startTimeMs, endTimeMs) {
   return hlPost(fundingRequestBody(symbol, startTimeMs, endTimeMs));
 }
 
+function candleTsToIntervalBoundary(ms, interval) {
+  const iv = interval ?? INTERVAL;
+  const step = iv === '15m' ? 15 * 60 * 1000 : 60 * 60 * 1000;
+  const boundary = Math.floor(ms / step) * step;
+  return new Date(boundary).toISOString().replace('Z', '+00:00');
+}
+
 function candleRows(rows, symbol, interval) {
   const iv = interval ?? INTERVAL;
   return (rows || []).map((r) => ({
     symbol,
     interval: iv,
-    ts: new Date(r.t).toISOString().replace('Z', '+00:00'),
+    ts: candleTsToIntervalBoundary(new Date(r.t).getTime(), iv),
     o: String(r.o),
     h: String(r.h),
     l: String(r.l),

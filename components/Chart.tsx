@@ -20,9 +20,13 @@ function computeMA(closes: number[], period: number): number[] {
   return out;
 }
 
+const INTERVAL_SEC: Record<string, number> = { '15m': 900, '1h': 3600 };
+
 export default function Chart({
   data,
   maLength,
+  interval,
+  tz,
   onLoadMore,
   onLoadNewer,
   loadingMore,
@@ -30,6 +34,8 @@ export default function Chart({
 }: {
   data: CandleRow[];
   maLength: number;
+  interval: string;
+  tz: 'UTC' | 'IST';
   onLoadMore?: (before: string) => void;
   onLoadNewer?: (after: string) => void;
   loadingMore?: boolean;
@@ -50,12 +56,24 @@ export default function Chart({
   useEffect(() => {
     if (!chartRef.current || !data.length) return;
 
+    const addSec = INTERVAL_SEC[interval] ?? 3600;
+    const timeZone = tz === 'IST' ? 'Asia/Kolkata' : 'UTC';
     const create = () => {
       const chart = createChart(chartRef.current!, {
         layout: { background: { type: ColorType.Solid, color: '#0d0d0d' }, textColor: '#888' },
         grid: { vertLines: { color: '#1a1a1a' }, horzLines: { color: '#1a1a1a' } },
         rightPriceScale: { borderColor: '#2a2a2a', scaleMargins: { top: 0.1, bottom: 0.2 }, ticksVisible: true },
-        timeScale: { borderColor: '#2a2a2a', timeVisible: true, secondsVisible: false, ticksVisible: true },
+        timeScale: {
+          borderColor: '#2a2a2a',
+          timeVisible: true,
+          secondsVisible: false,
+          ticksVisible: true,
+          tickMarkFormatter: (time: number) => {
+            const closeTime = time + addSec;
+            const d = new Date(closeTime * 1000);
+            return d.toLocaleString('en-GB', { timeZone, hour12: false, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+          },
+        },
         crosshair: { vertLine: { labelBackgroundColor: '#3b82f6' }, horzLine: { labelBackgroundColor: '#3b82f6' } },
         handleScroll: { vertTouchDrag: false },
       });
@@ -74,9 +92,11 @@ export default function Chart({
     if (!chartInstance.current) create();
 
     const chart = chartInstance.current!;
-    const preserveRange = chart.timeScale().getVisibleLogicalRange();
+    const timeScale = chart.timeScale();
+    const preserveRange = timeScale.getVisibleLogicalRange();
     const prevLen = prevDataLength.current;
     const added = data.length - prevLen;
+    const isInitialView = !initialFitDone.current;
 
     const candles: CandlestickData[] = data.map((r) => ({
       time: toTime(r.ts), open: Number(r.o), high: Number(r.h), low: Number(r.l), close: Number(r.c),
@@ -98,21 +118,22 @@ export default function Chart({
     const rangeToApply =
       lastLoadWasPrepend.current && added > 0
         ? { from: 0, to: Math.min(80, data.length - 1) }
-        : preserveRange;
+        : isInitialView
+          ? { from: Math.max(0, data.length - 80), to: data.length - 1 }
+          : preserveRange;
     lastLoadWasPrepend.current = false;
 
     if (rangeToApply) {
       requestAnimationFrame(() => {
-        if (chartInstance.current) chartInstance.current.timeScale().setVisibleLogicalRange(rangeToApply);
+        if (!chartInstance.current) return;
+        const ts = chartInstance.current.timeScale();
+        if (isInitialView) ts.applyOptions({ rightOffset: 25 });
+        ts.setVisibleLogicalRange(rangeToApply);
       });
     }
 
     prevDataLength.current = data.length;
-
-    if (!initialFitDone.current) {
-      chartInstance.current!.timeScale().fitContent();
-      initialFitDone.current = true;
-    }
+    if (isInitialView) initialFitDone.current = true;
 
     if (onLoadMore && hasMoreOlder && data.length > 0) {
       const oldestTs = data[0].ts;
@@ -137,7 +158,22 @@ export default function Chart({
         loadMoreRequested.current = null;
       };
     }
-  }, [data, maLength, data.length, onLoadMore, loadingMore, hasMoreOlder]);
+  }, [data, maLength, data.length, onLoadMore, loadingMore, hasMoreOlder, interval, tz]);
+
+  useEffect(() => {
+    if (!chartInstance.current) return;
+    const addSec = INTERVAL_SEC[interval] ?? 3600;
+    const timeZone = tz === 'IST' ? 'Asia/Kolkata' : 'UTC';
+    chartInstance.current.applyOptions({
+      timeScale: {
+        tickMarkFormatter: (time: number) => {
+          const closeTime = time + addSec;
+          const d = new Date(closeTime * 1000);
+          return d.toLocaleString('en-GB', { timeZone, hour12: false, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+        },
+      },
+    });
+  }, [interval, tz]);
 
   useEffect(() => {
     if (data.length) loadMoreRequested.current = null;

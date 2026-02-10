@@ -92,3 +92,10 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: 
 .toolbar-meta { display: flex; align-items: center; gap: 1rem; font-size: 0.85rem; color: var(--muted); margin-left: 0.5rem; }
 .toolbar-meta span { white-space: nowrap; }
 .toolbar-meta .meta-value { color: var(--text); }
+.toolbar-meta .meta-tz { color: var(--muted); font-size: 0.8em; }
+.toolbar-meta .toolbar-tz { display: inline-flex; gap: 0; margin-left: 0.5rem; }
+.toolbar-meta .toolbar-tz button { padding: 0.2rem 0.5rem; font-size: 0.8rem; background: var(--bg-elevated); border: 1px solid var(--border); color: var(--muted); cursor: pointer; border-radius: 2px; }
+.toolbar-meta .toolbar-tz button:first-child { border-radius: 2px 0 0 2px; }
+.toolbar-meta .toolbar-tz button:last-child { border-radius: 0 2px 2px 0; margin-left: -1px; }
+.toolbar-meta .toolbar-tz button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.toolbar-meta .toolbar-tz button:hover:not(.active) { background: var(--bg-hover); color: var(--text); }

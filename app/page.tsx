@@ -18,7 +18,7 @@ function nextCloseMs(interval: string): number {
   return next - now;
 }
 
-function ToolbarMeta({ lastClose, interval, tz }: { lastClose: number | null; interval: string; tz: 'UTC' | 'IST' }) {
+function ToolbarMeta({ lastClose, interval, tz, onTzChange }: { lastClose: number | null; interval: string; tz: 'UTC' | 'IST'; onTzChange: (tz: 'UTC' | 'IST') => void }) {
   const [countdown, setCountdown] = useState('--');
   const [now, setNow] = useState('');
   useEffect(() => {
@@ -39,9 +39,13 @@ function ToolbarMeta({ lastClose, interval, tz }: { lastClose: number | null; in
   }, [interval, tz]);
   return (
     <div className="toolbar-meta">
-      <span>Close: <span className="meta-value">{lastClose != null ? lastClose.toLocaleString(undefined, { maximumFractionDigits: 4 }) : '--'}</span></span>
+      <span>Close: <span className="meta-value">{lastClose != null ? lastClose.toLocaleString(undefined, { maximumFractionDigits: 4 }) : '--'}</span> <span className="meta-tz">({tz})</span></span>
       <span>Time: <span className="meta-value">{now || '--'}</span></span>
       <span>Next: <span className="meta-value">{countdown}</span></span>
+      <div className="toolbar-tz">
+        <button type="button" className={tz === 'UTC' ? 'active' : ''} onClick={() => onTzChange('UTC')}>UTC</button>
+        <button type="button" className={tz === 'IST' ? 'active' : ''} onClick={() => onTzChange('IST')}>IST</button>
+      </div>
     </div>
   );
 }
@@ -195,6 +199,7 @@ export default function Home() {
           lastClose={candles.length ? Number(candles[candles.length - 1].c) : null}
           interval={interval}
           tz={tz}
+          onTzChange={setTz}
         />
       </header>
       <div className="chart-wrap">
@@ -204,8 +209,11 @@ export default function Home() {
           </div>
         ) : (
           <Chart
+            key={`${symbol}-${interval}`}
             data={candles}
             maLength={maLength}
+            interval={interval}
+            tz={tz}
             onLoadMore={handleLoadMore}
             onLoadNewer={handleLoadNewer}
             loadingMore={loadingMore}
