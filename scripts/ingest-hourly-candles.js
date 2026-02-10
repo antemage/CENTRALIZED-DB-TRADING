@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 
+if (process.argv.includes('--refetch-today')) process.env.REFETCH_TODAY = '1';
+
 const HL_API = 'https://api.hyperliquid.xyz/info';
 const DEX = process.env.DEX ?? '';
 const INTERVAL = process.env.INTERVAL ?? '1h';
@@ -126,6 +128,16 @@ function filterClosedCandles(rows, interval, nowMs = Date.now()) {
   });
 }
 
+/** Dedupe by (symbol, interval, ts) keeping last occurrence so we never upsert duplicate keys. */
+function dedupeCandleRows(rows) {
+  const seen = new Map();
+  for (const r of rows) {
+    const key = `${r.symbol}\0${r.interval}\0${r.ts}`;
+    seen.set(key, r);
+  }
+  return [...seen.values()];
+}
+
 function fundingRows(rows, symbol) {
   return (rows || []).map((r) => ({
     symbol,
@@ -137,7 +149,8 @@ function fundingRows(rows, symbol) {
 
 async function upsertCandles(supabase, rows) {
   if (!rows.length) return;
-  const { error } = await supabase.from('candles').upsert(rows, {
+  const deduped = dedupeCandleRows(rows);
+  const { error } = await supabase.from('candles').upsert(deduped, {
     onConflict: 'symbol,interval,ts',
   });
   if (error) throw error;
@@ -159,10 +172,11 @@ async function backfillCandles(supabase, symbol, knownMaxTs, interval) {
   let total = 0;
 
   const lastClosedEndMs = Math.floor(now / intervalMs) * intervalMs;
+  const requestEndMs = lastClosedEndMs - 1;
   if (maxTs) {
     let afterMax = tsToMs(maxTs) + intervalMs;
-    while (afterMax < lastClosedEndMs) {
-      const endMs = Math.min(lastClosedEndMs, afterMax + PAGE_SIZE * intervalMs);
+    while (afterMax <= requestEndMs) {
+      const endMs = Math.min(requestEndMs, afterMax + PAGE_SIZE * intervalMs);
       const data = await fetchCandles(symbol, afterMax, endMs, iv);
       const rows = filterClosedCandles(candleRows(data, symbol, iv), iv, now);
       if (rows.length) await upsertCandles(supabase, rows);
@@ -173,7 +187,7 @@ async function backfillCandles(supabase, symbol, knownMaxTs, interval) {
     }
   } else {
     const startMs = now - PAGE_SIZE * intervalMs;
-    const data = await fetchCandles(symbol, startMs, lastClosedEndMs, iv);
+    const data = await fetchCandles(symbol, startMs, requestEndMs, iv);
     const rows = filterClosedCandles(candleRows(data, symbol, iv), iv, now);
     if (rows.length) await upsertCandles(supabase, rows);
     total += rows.length;
@@ -214,6 +228,56 @@ async function backfillFunding(supabase, symbol, knownMaxTs) {
   }
 
   return total;
+}
+
+/** Refetch a fixed time range (e.g. today). Fetches in pages and upserts only closed candles. */
+async function refetchCandleRange(supabase, symbol, interval, startMs, endMs) {
+  const iv = interval ?? INTERVAL;
+  const intervalMs = iv === '15m' ? 15 * 60 * 1000 : 60 * 60 * 1000;
+  const now = Date.now();
+  let total = 0;
+  let currentStart = startMs;
+  while (currentStart < endMs) {
+    const pageEndMs = Math.min(endMs, currentStart + PAGE_SIZE * intervalMs);
+    const data = await fetchCandles(symbol, currentStart, pageEndMs, iv);
+    const rows = filterClosedCandles(candleRows(data, symbol, iv), iv, now);
+    if (rows.length) await upsertCandles(supabase, rows);
+    total += rows.length;
+    if (rows.length < PAGE_SIZE) break;
+    const lastT = data[data.length - 1]?.t;
+    currentStart = lastT != null ? lastT + intervalMs : pageEndMs + intervalMs;
+  }
+  return total;
+}
+
+async function runRefetchTodayBatches(supabase, symbols, interval, startMs, endMs) {
+  let candleTotal = 0;
+  const numBatches = Math.ceil(symbols.length / BATCH_SIZE);
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    const t = Date.now();
+    const batch = symbols.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(async (symbol) => {
+        try {
+          const c = await refetchCandleRange(supabase, symbol, interval, startMs, endMs);
+          return { symbol, c };
+        } catch (err) {
+          return { symbol, err: err.message };
+        }
+      })
+    );
+    for (const r of results) {
+      if (r.err) console.error(`${r.symbol}: ${r.err}`);
+      else {
+        candleTotal += r.c;
+        if (r.c) console.log(`${r.symbol}: ${interval} +${r.c} candles`);
+      }
+    }
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    console.log(`[${((Date.now() - t) / 1000).toFixed(1)}s] Batch ${batchNum}/${numBatches} (refetch ${interval})`);
+    if (i + BATCH_SIZE < symbols.length) await sleep(BATCH_DELAY_MS);
+  }
+  return candleTotal;
 }
 
 const INGEST_MODE = process.env.INGEST_MODE ?? '';
@@ -320,6 +384,25 @@ async function main() {
 
   const fundingMax = await getFundingMaxPerSymbol(supabase, symbols);
   console.log(`[0.0s] Funding latest ts: ${fundingMax.size}/${symbols.length} symbols`);
+
+  if (process.env.REFETCH_TODAY === '1') {
+    const now = Date.now();
+    const d = new Date();
+    d.setUTCHours(0, 0, 0, 0);
+    const startOfTodayMs = d.getTime();
+    const intervalMs1h = 60 * 60 * 1000;
+    const intervalMs15m = 15 * 60 * 1000;
+    const lastClosed1h = Math.floor(now / intervalMs1h) * intervalMs1h;
+    const lastClosed15m = Math.floor(now / intervalMs15m) * intervalMs15m;
+    console.log(`Refetch today (UTC): ${new Date(startOfTodayMs).toISOString().slice(0, 10)} until last closed`);
+    console.log(`  1h end: ${new Date(lastClosed1h).toISOString()}  15m end: ${new Date(lastClosed15m).toISOString()}`);
+    console.log(`Refetching 1h candles for ${symbols.length} symbols (batch ${BATCH_SIZE})...`);
+    const r1 = await runRefetchTodayBatches(supabase, symbols, '1h', startOfTodayMs, lastClosed1h);
+    console.log(`Refetching 15m candles for ${symbols.length} symbols (batch ${BATCH_SIZE})...`);
+    const r2 = await runRefetchTodayBatches(supabase, symbols, '15m', startOfTodayMs, lastClosed15m);
+    console.log(`Done. 1h: ${r1} candles, 15m: ${r2} candles. Total: ${((Date.now() - tStart) / 1000).toFixed(1)}s`);
+    return;
+  }
 
   if (INGEST_MODE === 'hourly') {
     // 1h candles first, then 15m candles, then funding (once per hour)

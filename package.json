@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "ingest": "node scripts/ingest-hourly-candles.js",
+    "refetch-today": "node scripts/ingest-hourly-candles.js --refetch-today",
     "fetch-only": "node scripts/fetch-only-rate-limit-test.js",
     "verify": "node scripts/verify-supabase.js",
     "dev": "next dev",

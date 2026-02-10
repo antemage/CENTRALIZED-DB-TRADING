@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, LineData, HistogramData } from 'lightweight-charts';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, LineData, HistogramData, type MouseEventParams } from 'lightweight-charts';
 
 type CandleRow = { ts: string; o: number; h: number; l: number; c: number; v: number };
 
@@ -22,11 +22,14 @@ function computeMA(closes: number[], period: number): number[] {
 
 const INTERVAL_SEC: Record<string, number> = { '15m': 900, '1h': 3600 };
 
+export type HoveredCandle = { o: number; h: number; l: number; c: number; ts: string };
+
 export default function Chart({
   data,
   maLength,
   interval,
   tz,
+  onCandleHover,
   onLoadMore,
   onLoadNewer,
   loadingMore,
@@ -36,6 +39,7 @@ export default function Chart({
   maLength: number;
   interval: string;
   tz: 'UTC' | 'IST';
+  onCandleHover?: (c: HoveredCandle | null) => void;
   onLoadMore?: (before: string) => void;
   onLoadNewer?: (after: string) => void;
   loadingMore?: boolean;
@@ -52,6 +56,8 @@ export default function Chart({
   const lastLoadWasPrepend = useRef(false);
   const lastLoadMoreTime = useRef(0);
   const LOAD_MORE_COOLDOWN_MS = 1500;
+  const hoverClearTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const HOVER_CLEAR_DELAY_MS = 400;
 
   useEffect(() => {
     if (!chartRef.current || !data.length) return;
@@ -135,6 +141,48 @@ export default function Chart({
     prevDataLength.current = data.length;
     if (isInitialView) initialFitDone.current = true;
 
+    let unsubscribeCrosshair: (() => void) | undefined;
+    if (onCandleHover) {
+      const crosshairHandler = (param: MouseEventParams) => {
+        if (hoverClearTimeout.current) {
+          clearTimeout(hoverClearTimeout.current);
+          hoverClearTimeout.current = null;
+        }
+        if (!param.point) {
+          hoverClearTimeout.current = setTimeout(() => {
+            hoverClearTimeout.current = null;
+            onCandleHover(null);
+          }, HOVER_CLEAR_DELAY_MS);
+          return;
+        }
+        const series = candleSeries.current;
+        if (!series) return;
+        const bar = param.seriesData.get(series);
+        if (bar && typeof bar === 'object' && 'open' in bar && 'close' in bar) {
+          const time = param.time as number;
+          const row = data.find((r) => toTime(r.ts) === time);
+          const ts = row?.ts ?? new Date(time * 1000).toISOString();
+          onCandleHover({
+            o: Number(bar.open),
+            h: Number(bar.high),
+            l: Number(bar.low),
+            c: Number(bar.close),
+            ts,
+          });
+        } else {
+          onCandleHover(null);
+        }
+      };
+      chart.subscribeCrosshairMove(crosshairHandler);
+      unsubscribeCrosshair = () => {
+        if (hoverClearTimeout.current) {
+          clearTimeout(hoverClearTimeout.current);
+          hoverClearTimeout.current = null;
+        }
+        try { chart.unsubscribeCrosshairMove(crosshairHandler); } catch (_) {}
+      };
+    }
+
     if (onLoadMore && hasMoreOlder && data.length > 0) {
       const oldestTs = data[0].ts;
       const handler = (range: { from: number; to: number } | null) => {
@@ -156,9 +204,11 @@ export default function Chart({
         clearTimeout(t);
         try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler); } catch (_) {}
         loadMoreRequested.current = null;
+        unsubscribeCrosshair?.();
       };
     }
-  }, [data, maLength, data.length, onLoadMore, loadingMore, hasMoreOlder, interval, tz]);
+    return () => { unsubscribeCrosshair?.(); };
+  }, [data, maLength, data.length, onLoadMore, loadingMore, hasMoreOlder, interval, tz, onCandleHover]);
 
   useEffect(() => {
     if (!chartInstance.current) return;

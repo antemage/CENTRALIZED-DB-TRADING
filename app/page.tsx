@@ -18,7 +18,19 @@ function nextCloseMs(interval: string): number {
   return next - now;
 }
 
-function ToolbarMeta({ lastClose, interval, tz, onTzChange }: { lastClose: number | null; interval: string; tz: 'UTC' | 'IST'; onTzChange: (tz: 'UTC' | 'IST') => void }) {
+function ToolbarMeta({
+  lastClose,
+  interval,
+  tz,
+  onTzChange,
+  hoveredCandle,
+}: {
+  lastClose: number | null;
+  interval: string;
+  tz: 'UTC' | 'IST';
+  onTzChange: (tz: 'UTC' | 'IST') => void;
+  hoveredCandle: { o: number; h: number; l: number; c: number; ts: string } | null;
+}) {
   const [countdown, setCountdown] = useState('--');
   const [now, setNow] = useState('');
   useEffect(() => {
@@ -37,15 +49,22 @@ function ToolbarMeta({ lastClose, interval, tz, onTzChange }: { lastClose: numbe
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [interval, tz]);
+  const fmt = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 4 });
   return (
     <div className="toolbar-meta">
-      <span>Close: <span className="meta-value">{lastClose != null ? lastClose.toLocaleString(undefined, { maximumFractionDigits: 4 }) : '--'}</span> <span className="meta-tz">({tz})</span></span>
+      <span>Close: <span className="meta-value">{lastClose != null ? fmt(lastClose) : '--'}</span> <span className="meta-tz">({tz})</span></span>
       <span>Time: <span className="meta-value">{now || '--'}</span></span>
       <span>Next: <span className="meta-value">{countdown}</span></span>
       <div className="toolbar-tz">
         <button type="button" className={tz === 'UTC' ? 'active' : ''} onClick={() => onTzChange('UTC')}>UTC</button>
         <button type="button" className={tz === 'IST' ? 'active' : ''} onClick={() => onTzChange('IST')}>IST</button>
       </div>
+      <span className="toolbar-ohlc">
+        O: <span className="meta-value">{hoveredCandle ? fmt(hoveredCandle.o) : '--'}</span>
+        H: <span className="meta-value">{hoveredCandle ? fmt(hoveredCandle.h) : '--'}</span>
+        L: <span className="meta-value">{hoveredCandle ? fmt(hoveredCandle.l) : '--'}</span>
+        C: <span className="meta-value">{hoveredCandle ? fmt(hoveredCandle.c) : '--'}</span>
+      </span>
     </div>
   );
 }
@@ -65,6 +84,7 @@ export default function Home() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMoreOlder, setHasMoreOlder] = useState(true);
   const [tz, setTz] = useState<'UTC' | 'IST'>('UTC');
+  const [hoveredCandle, setHoveredCandle] = useState<{ o: number; h: number; l: number; c: number; ts: string } | null>(null);
   const lastCandleTsRef = useRef<string>('');
 
   const performance = sortBy === 'off' ? undefined : sortBy;
@@ -98,6 +118,10 @@ export default function Home() {
     if (!res.ok || data.error) return [];
     return Array.isArray(data) ? data : [];
   }, [interval]);
+
+  useEffect(() => {
+    setHoveredCandle(null);
+  }, [symbol, interval]);
 
   useEffect(() => {
     if (!symbol) {
@@ -200,6 +224,7 @@ export default function Home() {
           interval={interval}
           tz={tz}
           onTzChange={setTz}
+          hoveredCandle={hoveredCandle}
         />
       </header>
       <div className="chart-wrap">
@@ -214,6 +239,7 @@ export default function Home() {
             maLength={maLength}
             interval={interval}
             tz={tz}
+            onCandleHover={setHoveredCandle}
             onLoadMore={handleLoadMore}
             onLoadNewer={handleLoadNewer}
             loadingMore={loadingMore}
