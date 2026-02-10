@@ -1,252 +1,334 @@
 import 'dotenv/config';
-/**
- * Fetch only gaps: before min(ts) and after max(ts) in DB. Paginate to get full history (HL: 500/req, 5000 max).
- * Rate limit: 1200 weight/min; min 3.5s between HL calls to stay under.
- * Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY. Optional: COINS, INTERVAL (1h), DEX, CANDLE_HOURS (720 = 30d).
- */
-const HL_INFO = 'https://api.hyperliquid.xyz/info';
-const PAGINATION = 500;
-const HL_CANDLES_MAX = 5000;
-const WEIGHT_LIMIT_PER_MIN = 1200;
-const WEIGHT_BASE = 20;
-const MIN_MS_BETWEEN_CALLS = 3500;
+import { createClient } from '@supabase/supabase-js';
 
-const window = [];
-let lastCallTime = 0;
+const HL_API = 'https://api.hyperliquid.xyz/info';
+const DEX = process.env.DEX ?? '';
+const INTERVAL = process.env.INTERVAL ?? '1h';
+const CANDLE_HOURS = Number(process.env.CANDLE_HOURS) || (INTERVAL === '15m' ? 1250 : 720);
+const PAGE_SIZE = 500;
+const BATCH_SIZE = Number(process.env.BATCH_SIZE) || 9;
+const BATCH_DELAY_MS = Number(process.env.BATCH_DELAY_MS) || 500;
+const BATCH_COOLDOWN_EVERY = Number(process.env.BATCH_COOLDOWN_EVERY) || 6;
+const BATCH_COOLDOWN_MS = Number(process.env.BATCH_COOLDOWN_MS) || 60000;
 
-function getSum() {
-  const cutoff = Date.now() - 60000;
-  while (window.length && window[0].t < cutoff) window.shift();
-  return window.reduce((s, { w }) => s + w, 0);
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-async function waitForWeight(weight) {
-  while (getSum() + weight > WEIGHT_LIMIT_PER_MIN) {
-    const wait = window.length ? window[0].t + 60000 - Date.now() + 100 : 2000;
-    await new Promise((r) => setTimeout(r, Math.max(500, wait)));
+async function hlPost(body, retries = 4) {
+  const res = await fetch(HL_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 429 && retries > 0) {
+    const wait = 8000 * (5 - retries);
+    await sleep(wait);
+    return hlPost(body, retries - 1);
   }
-  const elapsed = Date.now() - lastCallTime;
-  if (elapsed < MIN_MS_BETWEEN_CALLS) await new Promise((r) => setTimeout(r, MIN_MS_BETWEEN_CALLS - elapsed));
+  if (!res.ok) throw new Error(`HL ${res.status}: ${await res.text()}`);
+  return res.json();
 }
 
-function recordWeight(weight) {
-  lastCallTime = Date.now();
-  window.push({ t: lastCallTime, w: weight });
+/** Latest ts per symbol for our symbol list only (avoids missing symbols as table grows). */
+async function getCandleMaxPerSymbol(supabase, symbols, interval) {
+  const iv = interval ?? INTERVAL;
+  if (!symbols?.length) return new Map();
+  const { data, error } = await supabase
+    .from('candles')
+    .select('symbol, ts')
+    .eq('interval', iv)
+    .in('symbol', symbols)
+    .order('ts', { ascending: false })
+    .limit(10000);
+  if (error) throw error;
+  const map = new Map();
+  for (const row of data ?? []) {
+    if (!map.has(row.symbol)) map.set(row.symbol, row.ts);
+  }
+  return map;
 }
 
-function weightCandleSnapshot(numItems) {
-  return WEIGHT_BASE + Math.ceil((numItems || 0) / 60);
-}
-function weightFundingHistory(numItems) {
-  return WEIGHT_BASE + Math.ceil((numItems || 0) / 20);
+/** Latest ts per symbol for our symbol list only. */
+async function getFundingMaxPerSymbol(supabase, symbols) {
+  if (!symbols?.length) return new Map();
+  const { data, error } = await supabase
+    .from('funding_history')
+    .select('symbol, ts')
+    .in('symbol', symbols)
+    .order('ts', { ascending: false })
+    .limit(10000);
+  if (error) throw error;
+  const map = new Map();
+  for (const row of data ?? []) {
+    if (!map.has(row.symbol)) map.set(row.symbol, row.ts);
+  }
+  return map;
 }
 
-async function post(type, body = {}, retries = 2) {
-  const maxWeight = type === 'candleSnapshot' ? WEIGHT_BASE + Math.ceil(500 / 60) : type === 'fundingHistory' ? WEIGHT_BASE + Math.ceil(500 / 20) : WEIGHT_BASE;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    await waitForWeight(maxWeight);
-    const res = await fetch(HL_INFO, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, ...body }),
-    });
-    const text = await res.text();
-    if (res.status === 429 && attempt < retries) {
-      await new Promise((r) => setTimeout(r, (attempt + 1) * 8000));
-      continue;
+function tsToMs(ts) {
+  if (ts == null) return null;
+  const ms = new Date(ts).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function candleRequestBody(symbol, startTimeMs, endTimeMs) {
+  return {
+    type: 'candleSnapshot',
+    req: { coin: symbol, interval: INTERVAL, startTime: startTimeMs, endTime: endTimeMs },
+  };
+}
+
+function fundingRequestBody(symbol, startTimeMs, endTimeMs) {
+  return { type: 'fundingHistory', coin: symbol, startTime: startTimeMs, endTime: endTimeMs };
+}
+
+async function fetchCandles(symbol, startTimeMs, endTimeMs, interval) {
+  return hlPost(candleRequestBody(symbol, startTimeMs, endTimeMs, interval));
+}
+
+async function fetchFunding(symbol, startTimeMs, endTimeMs) {
+  return hlPost(fundingRequestBody(symbol, startTimeMs, endTimeMs));
+}
+
+function candleRows(rows, symbol, interval) {
+  const iv = interval ?? INTERVAL;
+  return (rows || []).map((r) => ({
+    symbol,
+    interval: iv,
+    ts: new Date(r.t).toISOString().replace('Z', '+00:00'),
+    o: String(r.o),
+    h: String(r.h),
+    l: String(r.l),
+    c: String(r.c),
+    v: Number(r.v) || 0,
+    n: Number(r.n) || 0,
+  }));
+}
+
+function fundingRows(rows, symbol) {
+  return (rows || []).map((r) => ({
+    symbol,
+    ts: new Date(r.time).toISOString().replace('Z', '+00:00'),
+    funding_rate: String(r.fundingRate ?? ''),
+    premium: r.premium != null ? String(r.premium) : null,
+  }));
+}
+
+async function upsertCandles(supabase, rows) {
+  if (!rows.length) return;
+  const { error } = await supabase.from('candles').upsert(rows, {
+    onConflict: 'symbol,interval,ts',
+  });
+  if (error) throw error;
+}
+
+async function upsertFunding(supabase, rows) {
+  if (!rows.length) return;
+  const { error } = await supabase.from('funding_history').upsert(rows, {
+    onConflict: 'symbol,ts',
+  });
+  if (error) throw error;
+}
+
+async function backfillCandles(supabase, symbol, knownMaxTs, interval) {
+  const iv = interval ?? INTERVAL;
+  const maxTs = knownMaxTs ?? null;
+  const now = Date.now();
+  const intervalMs = iv === '15m' ? 15 * 60 * 1000 : 60 * 60 * 1000;
+  let total = 0;
+
+  if (maxTs) {
+    let afterMax = tsToMs(maxTs) + intervalMs;
+    while (afterMax < now) {
+      const endMs = Math.min(now, afterMax + PAGE_SIZE * intervalMs);
+      const data = await fetchCandles(symbol, afterMax, endMs, iv);
+      const rows = candleRows(data, symbol, iv);
+      if (rows.length) await upsertCandles(supabase, rows);
+      total += rows.length;
+      if (rows.length < PAGE_SIZE) break;
+      const lastT = data[data.length - 1]?.t;
+      afterMax = lastT != null ? lastT + intervalMs : endMs + intervalMs;
     }
-    if (!res.ok) throw new Error(`HL ${type} ${res.status}: ${text}`);
-    const data = text ? JSON.parse(text) : null;
-    const w = type === 'candleSnapshot' ? weightCandleSnapshot(Array.isArray(data) ? data.length : 0) : type === 'fundingHistory' ? weightFundingHistory(Array.isArray(data) ? data.length : 0) : WEIGHT_BASE;
-    recordWeight(w);
-    return data;
+  } else {
+    const startMs = now - PAGE_SIZE * intervalMs;
+    const data = await fetchCandles(symbol, startMs, now, iv);
+    const rows = candleRows(data, symbol, iv);
+    if (rows.length) await upsertCandles(supabase, rows);
+    total += rows.length;
   }
+
+  return total;
 }
 
-async function run() {
+async function backfillFunding(supabase, symbol, knownMaxTs) {
+  const maxTs = knownMaxTs ?? null;
+  const now = Date.now();
+  let total = 0;
+
+  const fetchAndUpsert = async (startMs, endMs) => {
+    const data = await fetchFunding(symbol, startMs, endMs);
+    const rows = fundingRows(data, symbol);
+    if (rows.length) await upsertFunding(supabase, rows);
+    return {
+      count: rows.length,
+      lastTime: data?.[data.length - 1]?.time,
+    };
+  };
+
+  // Front-fill only: fetch new funding after latest in DB
+  if (maxTs) {
+    let afterMs = tsToMs(maxTs) + 1;
+    while (afterMs < now) {
+      const { count, lastTime } = await fetchAndUpsert(afterMs, now);
+      total += count;
+      if (count < PAGE_SIZE) break;
+      afterMs = (lastTime ?? afterMs) + 1;
+    }
+  } else {
+    // No data yet: seed with one page of recent funding
+    const startMs = now - 14 * 8 * 60 * 60 * 1000;
+    const { count } = await fetchAndUpsert(startMs, now);
+    total += count;
+  }
+
+  return total;
+}
+
+const INGEST_MODE = process.env.INGEST_MODE ?? '';
+
+async function runCandleBatches(supabase, symbols, candleMax, interval, skipFunding, fundingMax) {
+  let candleTotal = 0;
+  let fundingTotal = 0;
+  const numBatches = Math.ceil(symbols.length / BATCH_SIZE);
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    const t = Date.now();
+    const batch = symbols.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(async (symbol) => {
+        try {
+          const c = await backfillCandles(supabase, symbol, candleMax.get(symbol), interval);
+          const f = skipFunding ? 0 : await backfillFunding(supabase, symbol, fundingMax.get(symbol));
+          return { symbol, c, f };
+        } catch (err) {
+          return { symbol, err: err.message };
+        }
+      })
+    );
+    for (const r of results) {
+      if (r.err) console.error(`${r.symbol}: ${r.err}`);
+      else {
+        candleTotal += r.c;
+        fundingTotal += r.f;
+        if (r.c || r.f) console.log(`${r.symbol}: +${r.c} candles${skipFunding ? '' : `, +${r.f} funding`}`);
+      }
+    }
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    console.log(`[${((Date.now() - t) / 1000).toFixed(1)}s] Batch ${batchNum}/${numBatches} (${interval})`);
+    if (i + BATCH_SIZE < symbols.length) await sleep(BATCH_DELAY_MS);
+  }
+  return { candleTotal, fundingTotal };
+}
+
+async function runFundingOnlyBatches(supabase, symbols, fundingMax) {
+  let fundingTotal = 0;
+  const numBatches = Math.ceil(symbols.length / BATCH_SIZE);
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    const t = Date.now();
+    const batch = symbols.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(async (symbol) => {
+        try {
+          const f = await backfillFunding(supabase, symbol, fundingMax.get(symbol));
+          return { symbol, f };
+        } catch (err) {
+          return { symbol, err: err.message };
+        }
+      })
+    );
+    for (const r of results) {
+      if (r.err) console.error(`${r.symbol}: ${r.err}`);
+      else {
+        fundingTotal += r.f;
+        if (r.f) console.log(`${r.symbol}: +${r.f} funding`);
+      }
+    }
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    console.log(`[${((Date.now() - t) / 1000).toFixed(1)}s] Batch ${batchNum}/${numBatches} (funding)`);
+    if (i + BATCH_SIZE < symbols.length) {
+      await sleep(BATCH_DELAY_MS);
+      if (batchNum % BATCH_COOLDOWN_EVERY === 0) {
+        console.log(`Cooldown ${BATCH_COOLDOWN_MS / 1000}s (every ${BATCH_COOLDOWN_EVERY} batches)`);
+        await sleep(BATCH_COOLDOWN_MS);
+      }
+    }
+  }
+  return fundingTotal;
+}
+
+async function main() {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  console.log('SUPABASE_URL set:', !!url);
+  console.log('SUPABASE_SERVICE_ROLE_KEY set:', !!key);
+  console.log('INGEST_MODE:', INGEST_MODE || '(single)');
   if (!url || !key) {
-    console.error('Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
+    console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY. Add them as repo secrets.');
     process.exit(1);
   }
 
-  const { createClient } = await import('@supabase/supabase-js');
   const supabase = createClient(url, key);
-  const dex = process.env.DEX ?? '';
-  const interval = process.env.INTERVAL || '1h';
-  const filterCoins = process.env.COINS ? process.env.COINS.split(',').map((c) => c.trim()).filter(Boolean) : null;
-  const candleHours = parseInt(process.env.CANDLE_HOURS, 10) || 720;
-  const endTime = Date.now();
-  const startTimeCandles = endTime - candleHours * 60 * 60 * 1000;
-  const startTimeFunding = endTime - 8 * 24 * 60 * 60 * 1000;
+  const tStart = Date.now();
 
-  const [meta, assetCtxs] = await post('metaAndAssetCtxs', dex ? { dex } : {});
-  const universe = meta?.universe ?? [];
-  const ctxs = Array.isArray(assetCtxs) ? assetCtxs : [assetCtxs];
-  const now = new Date().toISOString();
-
-  const symbols = universe
-    .map((u, i) => ({ name: u.name, meta: u, ctx: ctxs[i] }))
-    .filter(({ name }) => !filterCoins || filterCoins.includes(name))
-    .filter(({ meta }) => !meta.isDelisted);
-
-  const symbolList = symbols.map((s) => s.name);
-
-  // DB: min and max ts per symbol for candles and funding
-  const BATCH = 30;
-  const minCandle = {};
-  const maxCandle = {};
-  const minFunding = {};
-  const maxFunding = {};
-  for (let i = 0; i < symbolList.length; i += BATCH) {
-    const chunk = symbolList.slice(i, i + BATCH);
-    const [cMin, cMax, fMin, fMax] = await Promise.all([
-      Promise.all(chunk.map((s) => supabase.from('candles').select('ts').eq('symbol', s).eq('interval', interval).order('ts', { ascending: true }).limit(1).maybeSingle())),
-      Promise.all(chunk.map((s) => supabase.from('candles').select('ts').eq('symbol', s).eq('interval', interval).order('ts', { ascending: false }).limit(1).maybeSingle())),
-      Promise.all(chunk.map((s) => supabase.from('funding_history').select('ts').eq('symbol', s).order('ts', { ascending: true }).limit(1).maybeSingle())),
-      Promise.all(chunk.map((s) => supabase.from('funding_history').select('ts').eq('symbol', s).order('ts', { ascending: false }).limit(1).maybeSingle())),
-    ]);
-    chunk.forEach((s, j) => {
-      if (cMin[j]?.data?.ts) minCandle[s] = new Date(cMin[j].data.ts).getTime();
-      if (cMax[j]?.data?.ts) maxCandle[s] = new Date(cMax[j].data.ts).getTime();
-      if (fMin[j]?.data?.ts) minFunding[s] = new Date(fMin[j].data.ts).getTime();
-      if (fMax[j]?.data?.ts) maxFunding[s] = new Date(fMax[j].data.ts).getTime();
-    });
-  }
-
-  // Ranges to fetch: only before existing min and after existing max
-  const candleRanges = (coin) => {
-    const minT = minCandle[coin];
-    const maxT = maxCandle[coin];
-    const ranges = [];
-    if (maxT == null || maxT < endTime - 60 * 60 * 1000) {
-      ranges.push({ from: maxT != null ? maxT + 1 : startTimeCandles, to: endTime });
-    }
-    if (minT == null || minT > startTimeCandles) {
-      const to = minT != null ? minT - 1 : endTime;
-      if (startTimeCandles <= to) ranges.push({ from: startTimeCandles, to });
-    }
-    return ranges;
-  };
-  const fundingRanges = (coin) => {
-    const minT = minFunding[coin];
-    const maxT = maxFunding[coin];
-    const ranges = [];
-    if (maxT == null || maxT < endTime - 60 * 60 * 1000) {
-      ranges.push({ from: maxT != null ? maxT + 1 : startTimeFunding, to: endTime });
-    }
-    if (minT == null || minT > startTimeFunding) {
-      const to = minT != null ? minT - 1 : endTime;
-      if (startTimeFunding <= to) ranges.push({ from: startTimeFunding, to });
-    }
-    return ranges;
-  };
-
-  // perp_meta + asset_ctxs
-  const metaRows = symbols.map(({ name, meta: m }) => ({ symbol: name, sz_decimals: m.szDecimals ?? null, max_leverage: m.maxLeverage ?? null, meta: m }));
+  let t = Date.now();
+  const metaData = await hlPost({ type: 'metaAndAssetCtxs', dex: DEX });
+  const universe = metaData?.[0]?.universe ?? [];
+  const symbolsFromEnv = process.env.COINS ? process.env.COINS.split(',').map((s) => s.trim()) : null;
+  const symbols = symbolsFromEnv ?? universe.filter((a) => !a.isDelisted).map((a) => a.name);
+  const metaRows = universe.filter((a) => !a.isDelisted).map((a) => ({
+    symbol: a.name,
+    sz_decimals: a.szDecimals ?? 0,
+    max_leverage: a.maxLeverage ?? 0,
+    meta: a,
+  }));
   if (metaRows.length) {
     const { error } = await supabase.from('perp_meta').upsert(metaRows, { onConflict: 'symbol' });
-    if (error) console.error('perp_meta', error);
-    else console.log('perp_meta:', metaRows.length);
+    if (error) console.warn('perp_meta upsert:', error.message);
+  }
+  console.log(`[${((Date.now() - t) / 1000).toFixed(1)}s] HL meta + perp_meta upsert`);
+
+  const fundingMax = await getFundingMaxPerSymbol(supabase, symbols);
+  console.log(`[0.0s] Funding latest ts: ${fundingMax.size}/${symbols.length} symbols`);
+
+  if (INGEST_MODE === 'hourly') {
+    // 1h candles first, then 15m candles, then funding (once per hour)
+    t = Date.now();
+    const candleMax1h = await getCandleMaxPerSymbol(supabase, symbols, '1h');
+    console.log(`[${((Date.now() - t) / 1000).toFixed(1)}s] Bulk load latest ts 1h: ${candleMax1h.size}/${symbols.length} symbols`);
+    console.log(`Ingesting 1h candles for ${symbols.length} symbols (batch ${BATCH_SIZE}, ${BATCH_DELAY_MS}ms between batches)`);
+    const r1 = await runCandleBatches(supabase, symbols, candleMax1h, '1h', true, fundingMax);
+    t = Date.now();
+    const candleMax15m = await getCandleMaxPerSymbol(supabase, symbols, '15m');
+    console.log(`[${((Date.now() - t) / 1000).toFixed(1)}s] Bulk load latest ts 15m: ${candleMax15m.size}/${symbols.length} symbols`);
+    console.log(`Ingesting 15m candles for ${symbols.length} symbols (batch ${BATCH_SIZE}, ${BATCH_DELAY_MS}ms between batches)`);
+    const r2 = await runCandleBatches(supabase, symbols, candleMax15m, '15m', true, fundingMax);
+    console.log(`Ingesting funding for ${symbols.length} symbols (batch ${BATCH_SIZE}, ${BATCH_DELAY_MS}ms between batches)`);
+    const fundingTotal = await runFundingOnlyBatches(supabase, symbols, fundingMax);
+    console.log(`Done. 1h candles: ${r1.candleTotal}, 15m candles: ${r2.candleTotal}, Funding: ${fundingTotal}. Total: ${((Date.now() - tStart) / 1000).toFixed(1)}s`);
+    return;
   }
 
-  const ctxRows = symbols
-    .filter(({ ctx }) => ctx)
-    .map(({ name, ctx }) => ({
-      symbol: name,
-      ts: now,
-      mark_px: ctx.markPx != null ? Number(ctx.markPx) : null,
-      mid_px: ctx.midPx != null ? Number(ctx.midPx) : null,
-      oracle_px: ctx.oraclePx != null ? Number(ctx.oraclePx) : null,
-      funding: ctx.funding != null ? Number(ctx.funding) : null,
-      open_interest: ctx.openInterest != null ? Number(ctx.openInterest) : null,
-      day_ntl_vlm: ctx.dayNtlVlm != null ? Number(ctx.dayNtlVlm) : null,
-      prev_day_px: ctx.prevDayPx != null ? Number(ctx.prevDayPx) : null,
-      premium: ctx.premium != null ? Number(ctx.premium) : null,
-      impact_pxs: ctx.impactPxs ?? null,
-    }));
-  if (ctxRows.length) {
-    const { error } = await supabase.from('asset_ctxs').upsert(ctxRows, { onConflict: 'symbol,ts' });
-    if (error) console.error('asset_ctxs', error);
-    else console.log('asset_ctxs:', ctxRows.length);
-  }
-
-  let candleCalls = 0;
-  let fundingCalls = 0;
-  const failed = [];
-
-  for (const { name: coin } of symbols) {
-    try {
-      const ranges = candleRanges(coin);
-      for (const { from, to } of ranges) {
-        let fromT = from;
-        let total = 0;
-        while (fromT <= to) {
-          const candles = await post('candleSnapshot', { req: { coin, interval, startTime: fromT, endTime: to } });
-          candleCalls++;
-          if (!candles?.length) break;
-          const rows = candles.map((c) => ({
-            symbol: coin,
-            interval,
-            ts: new Date(c.T).toISOString(),
-            o: Number(c.o),
-            h: Number(c.h),
-            l: Number(c.l),
-            c: Number(c.c),
-            v: Number(c.v),
-            n: c.n ?? null,
-          }));
-          const { error } = await supabase.from('candles').upsert(rows, { onConflict: 'symbol,interval,ts' });
-          if (error) {
-            console.error(coin, 'candles', error);
-            break;
-          }
-          total += rows.length;
-          const lastT = candles[candles.length - 1].T;
-          if (lastT >= to || candles.length < PAGINATION) break;
-          fromT = lastT + 1;
-        }
-        if (total) console.log(coin, 'candles:', total);
-      }
-
-      const franges = fundingRanges(coin);
-      for (const { from, to } of franges) {
-        let fromT = from;
-        let total = 0;
-        while (fromT <= to) {
-          const funding = await post('fundingHistory', { coin, startTime: fromT, endTime: to });
-          fundingCalls++;
-          if (!funding?.length) break;
-          const rows = funding.map((f) => ({
-            symbol: coin,
-            ts: new Date(f.time).toISOString(),
-            funding_rate: Number(f.fundingRate),
-            premium: f.premium != null ? Number(f.premium) : null,
-          }));
-          const { error } = await supabase.from('funding_history').upsert(rows, { onConflict: 'symbol,ts' });
-          if (error) {
-            console.error(coin, 'funding', error);
-            break;
-          }
-          total += rows.length;
-          const lastT = funding[funding.length - 1].time;
-          if (lastT >= to || funding.length < PAGINATION) break;
-          fromT = lastT + 1;
-        }
-        if (total) console.log(coin, 'funding:', total);
-      }
-    } catch (err) {
-      console.error(coin, err.message);
-      failed.push(coin);
-    }
-  }
-
-  console.log('HL calls: candles', candleCalls, 'funding', fundingCalls);
-  if (failed.length) console.error('Failed:', failed.join(', '));
+  const interval = process.env.INTERVAL ?? '1h';
+  const skipFunding = process.env.SKIP_FUNDING === '1';
+  t = Date.now();
+  const candleMax = await getCandleMaxPerSymbol(supabase, symbols, interval);
+  console.log(`[${((Date.now() - t) / 1000).toFixed(1)}s] Bulk load latest ts (${interval}): ${candleMax.size}/${symbols.length} symbols`);
+  console.log(`Ingesting ${interval} candles${skipFunding ? '' : ' and funding'} for ${symbols.length} symbols (batch ${BATCH_SIZE}, ${BATCH_DELAY_MS}ms between batches)`);
+  const { candleTotal, fundingTotal } = await runCandleBatches(supabase, symbols, candleMax, interval, skipFunding, fundingMax);
+  console.log(`Done. Candles: ${candleTotal}, Funding: ${fundingTotal}. Total: ${((Date.now() - tStart) / 1000).toFixed(1)}s`);
 }
 
-run().catch((e) => {
-  console.error(e);
+main().catch((err) => {
+  console.error(err);
   process.exit(1);
 });

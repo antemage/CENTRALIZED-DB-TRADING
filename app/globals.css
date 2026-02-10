@@ -1,0 +1,86 @@
+:root {
+  --bg: #0d0d0d;
+  --surface: #161616;
+  --border: #2a2a2a;
+  --text: #e5e5e5;
+  --muted: #888;
+  --green: #22c55e;
+  --red: #ef4444;
+  --accent: #3b82f6;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
+#__next, .app { height: 100%; display: flex; flex-direction: column; }
+
+.toolbar {
+  display: flex; align-items: center; gap: 1rem; padding: 0.75rem 1rem;
+  background: var(--surface); border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.toolbar select, .toolbar input {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.9rem;
+}
+.toolbar select:focus, .toolbar input:focus { outline: none; border-color: var(--accent); }
+.toolbar label { display: flex; align-items: center; gap: 0.4rem; color: var(--muted); font-size: 0.85rem; }
+
+.tf { display: flex; gap: 0.25rem; }
+.tf button {
+  background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+  padding: 0.35rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+}
+.tf button:hover { color: var(--text); border-color: var(--muted); }
+.tf button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.chart-wrap { flex: 1; min-height: 0; position: relative; }
+.chart-wrap > div { width: 100%; height: 100%; }
+
+.time-bar {
+  display: flex; align-items: center; gap: 1rem; padding: 0.4rem 1rem;
+  background: var(--bg); border-bottom: 1px solid var(--border); font-size: 0.8rem; color: var(--muted);
+}
+.time-bar-item { white-space: nowrap; }
+.time-bar-tz { display: flex; gap: 0.2rem; margin-left: auto; }
+.time-bar-tz button {
+  background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+  padding: 0.2rem 0.5rem; border-radius: 4px; cursor: pointer; font-size: 0.75rem;
+}
+.time-bar-tz button.active { border-color: var(--accent); color: var(--accent); }
+
+.symbol-select { position: relative; }
+.symbol-trigger {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.9rem; min-width: 140px; cursor: pointer; text-align: left;
+}
+.symbol-trigger:hover { border-color: var(--muted); }
+.symbol-dropdown {
+  position: absolute; top: 100%; left: 0; margin-top: 4px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 100; min-width: 320px; max-height: 380px; display: flex; flex-direction: column;
+}
+.symbol-dropdown-filters {
+  display: flex; align-items: center; gap: 8px; padding: 10px 10px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; flex-wrap: wrap;
+}
+.symbol-dropdown-filters label { margin: 0; font-size: 0.8rem; color: var(--muted); }
+.symbol-dropdown-filters select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 0.3rem 0.5rem; border-radius: 4px; font-size: 0.85rem;
+}
+.symbol-dropdown-filters .filter-period-row { display: flex; align-items: center; gap: 4px; }
+.symbol-dropdown-filters .filter-caret {
+  background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+  padding: 0.25rem 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.75rem; line-height: 1;
+}
+.symbol-dropdown-filters .filter-caret:hover { color: var(--text); border-color: var(--muted); }
+.symbol-search { margin: 10px; padding: 0.5rem 0.6rem; border-radius: 6px; width: calc(100% - 20px); box-sizing: border-box; }
+.symbol-list { list-style: none; margin: 0; padding: 6px 12px 12px; overflow-y: auto; max-height: 300px; }
+.symbol-list li { display: flex; align-items: center; gap: 10px; padding: 0.45rem 8px; cursor: pointer; min-height: 32px; }
+.symbol-list li:hover { background: var(--bg); }
+.symbol-list li.selected { background: rgba(59, 130, 246, 0.2); }
+.symbol-list .symbol-label { flex: 1; min-width: 0; }
+.symbol-list .symbol-meta { flex-shrink: 0; margin-left: 8px; }
+.star-btn { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 4px; font-size: 1rem; line-height: 1; }
+.star-btn:hover, .star-btn.starred { color: #f59e0b; }
+
+.toolbar-meta { display: flex; align-items: center; gap: 1rem; font-size: 0.85rem; color: var(--muted); margin-left: 0.5rem; }
+.toolbar-meta span { white-space: nowrap; }
+.toolbar-meta .meta-value { color: var(--text); }
