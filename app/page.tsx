@@ -116,14 +116,15 @@ export default function Home() {
   // Poll for new candles so dashboard updates when ingest writes to Supabase
   useEffect(() => {
     if (!symbol || !candles.length) return;
-    const id = setInterval(() => {
+    const pollMs = 15000;
+    const id = window.setInterval(() => {
       const after = lastCandleTsRef.current;
       if (!after) return;
       loadCandles(symbol, { after }).then((rows) => {
         if (rows.length) setCandles((prev) => [...prev, ...rows]);
       });
-    }, 15000);
-    return () => clearInterval(id);
+    }, pollMs);
+    return () => window.clearInterval(id);
   }, [symbol, interval, loadCandles, candles.length]);
 
   const handleLoadMore = useCallback((before: string) => {

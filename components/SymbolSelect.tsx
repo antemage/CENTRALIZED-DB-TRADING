@@ -85,9 +85,9 @@ export default function SymbolSelect({
     return a.localeCompare(b);
   });
 
-  const price = selected && prices?.[selected];
-  const ret = selected && returns?.[selected];
-  const displayPct = performance && ret != null ? ret : price?.change24h;
+  const price = selected ? prices?.[selected] : undefined;
+  const ret = selected ? returns?.[selected] : undefined;
+  const displayPct = performance && ret != null ? ret : (price && typeof price === 'object' ? price.change24h : undefined);
   const pctNum = typeof displayPct === 'number' ? displayPct : Number(displayPct);
 
   return (

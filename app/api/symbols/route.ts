@@ -8,7 +8,7 @@ const WINDOW_CANDLES: Record<string, Record<string, number>> = {
 };
 
 export async function GET(req: NextRequest) {
-  const performance = req.nextUrl.searchParams.get('performance') as '24h' | '1h' | '15m' | null;
+  const performance = req.nextUrl.searchParams.get('performance') as '24h' | '1h' | '15m' | 'off' | null;
   const intervalParam = (req.nextUrl.searchParams.get('interval') ?? '1h') as '1h' | '15m';
   const benchmark = (req.nextUrl.searchParams.get('benchmark') ?? 'USDT') as 'USDT' | 'BTC';
   const order = (req.nextUrl.searchParams.get('order') ?? 'desc') as 'desc' | 'asc';
