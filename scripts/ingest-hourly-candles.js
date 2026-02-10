@@ -74,10 +74,11 @@ function tsToMs(ts) {
   return Number.isNaN(ms) ? null : ms;
 }
 
-function candleRequestBody(symbol, startTimeMs, endTimeMs) {
+function candleRequestBody(symbol, startTimeMs, endTimeMs, interval) {
+  const iv = interval ?? INTERVAL;
   return {
     type: 'candleSnapshot',
-    req: { coin: symbol, interval: INTERVAL, startTime: startTimeMs, endTime: endTimeMs },
+    req: { coin: symbol, interval: iv, startTime: startTimeMs, endTime: endTimeMs },
   };
 }
 
@@ -115,6 +116,16 @@ function candleRows(rows, symbol, interval) {
   }));
 }
 
+/** Only include candles whose period has closed (bar end <= now). */
+function filterClosedCandles(rows, interval, nowMs = Date.now()) {
+  const iv = interval ?? INTERVAL;
+  const intervalMs = iv === '15m' ? 15 * 60 * 1000 : 60 * 60 * 1000;
+  return rows.filter((r) => {
+    const startMs = tsToMs(r.ts);
+    return startMs != null && startMs + intervalMs <= nowMs;
+  });
+}
+
 function fundingRows(rows, symbol) {
   return (rows || []).map((r) => ({
     symbol,
@@ -147,12 +158,13 @@ async function backfillCandles(supabase, symbol, knownMaxTs, interval) {
   const intervalMs = iv === '15m' ? 15 * 60 * 1000 : 60 * 60 * 1000;
   let total = 0;
 
+  const lastClosedEndMs = Math.floor(now / intervalMs) * intervalMs;
   if (maxTs) {
     let afterMax = tsToMs(maxTs) + intervalMs;
-    while (afterMax < now) {
-      const endMs = Math.min(now, afterMax + PAGE_SIZE * intervalMs);
+    while (afterMax < lastClosedEndMs) {
+      const endMs = Math.min(lastClosedEndMs, afterMax + PAGE_SIZE * intervalMs);
       const data = await fetchCandles(symbol, afterMax, endMs, iv);
-      const rows = candleRows(data, symbol, iv);
+      const rows = filterClosedCandles(candleRows(data, symbol, iv), iv, now);
       if (rows.length) await upsertCandles(supabase, rows);
       total += rows.length;
       if (rows.length < PAGE_SIZE) break;
@@ -161,8 +173,8 @@ async function backfillCandles(supabase, symbol, knownMaxTs, interval) {
     }
   } else {
     const startMs = now - PAGE_SIZE * intervalMs;
-    const data = await fetchCandles(symbol, startMs, now, iv);
-    const rows = candleRows(data, symbol, iv);
+    const data = await fetchCandles(symbol, startMs, lastClosedEndMs, iv);
+    const rows = filterClosedCandles(candleRows(data, symbol, iv), iv, now);
     if (rows.length) await upsertCandles(supabase, rows);
     total += rows.length;
   }
