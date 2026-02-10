@@ -22,3 +22,8 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           INGEST_MODE: 'hourly'
+          # Tighter delays on CI (runner↔HL/Supabase latency already adds time)
+          BATCH_DELAY_MS: '250'
+          BATCH_COOLDOWN_MS: '30000'
+          BATCH_COOLDOWN_EVERY: '8'
+          BATCH_SIZE: '12'

@@ -24,3 +24,5 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           INTERVAL: '15m'
           SKIP_FUNDING: '1'
+          BATCH_DELAY_MS: '250'
+          BATCH_SIZE: '12'

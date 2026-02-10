@@ -6,6 +6,8 @@ const DEX = process.env.DEX ?? '';
 const INTERVAL = process.env.INTERVAL ?? '1h';
 const CANDLE_HOURS = Number(process.env.CANDLE_HOURS) || (INTERVAL === '15m' ? 1250 : 720);
 const PAGE_SIZE = 500;
+// Slower on GitHub: runner↔HL/Supabase latency, many batches, funding 60s cooldown every 6 batches.
+// Override via env: BATCH_SIZE, BATCH_DELAY_MS, BATCH_COOLDOWN_MS, BATCH_COOLDOWN_EVERY
 const BATCH_SIZE = Number(process.env.BATCH_SIZE) || 9;
 const BATCH_DELAY_MS = Number(process.env.BATCH_DELAY_MS) || 500;
 const BATCH_COOLDOWN_EVERY = Number(process.env.BATCH_COOLDOWN_EVERY) || 6;
